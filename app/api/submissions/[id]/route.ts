@@ -4,17 +4,9 @@ import prisma from '@/lib/prisma'
 import { requireAuth } from '@/lib/auth'
 import { hasPermission } from '@/lib/permissions'
 import { logDomainEvent } from '@/lib/audit'
-import {
-  ApiError,
-  errorResponse,
-  successResponse,
-  unauthorized,
-  forbidden,
-  notFound,
-  invalidInput,
-} from '@/lib/errors'
+import { errorResponse, successResponse, ErrorCodes } from '@/lib/errors'
 
-const updateSubmissionSchema = z.object({
+const updateSchema = z.object({
   title: z.string().min(5).max(200).optional(),
   description: z.string().min(10).optional(),
 })
@@ -29,7 +21,7 @@ export async function GET(
     const submission = await prisma.submission.findUnique({
       where: { id: params.id },
       include: {
-        createdBy: {
+        owner: {
           select: {
             id: true,
             email: true,
@@ -40,31 +32,57 @@ export async function GET(
     })
 
     if (!submission) {
-      throw notFound('Submission not found')
+      return NextResponse.json(
+        errorResponse(ErrorCodes.NOT_FOUND, 'Submission not found'),
+        { status: 404 }
+      )
     }
 
     const canReadAll = await hasPermission(user.id, 'submissions:read:all')
     const canReadOwn = await hasPermission(user.id, 'submissions:read:own', {
-      resourceOwnerId: submission.createdById,
+      ownerId: submission.ownerId,
     })
 
     if (!canReadAll && !canReadOwn) {
-      throw forbidden('You do not have permission to read this submission')
+      const ip = request.headers.get('x-forwarded-for') || 'unknown'
+      const userAgent = request.headers.get('user-agent') || 'unknown'
+      
+      await logDomainEvent({
+        action: 'submission.read',
+        entityType: 'submission',
+        entityId: params.id,
+        userId: user.id,
+        success: false,
+        metadata: { reason: 'permission_denied' },
+        ip,
+        userAgent,
+      })
+
+      throw new Error('FORBIDDEN')
     }
 
     return NextResponse.json(successResponse(submission))
   } catch (error) {
-    if (error instanceof Error && error.message === 'UNAUTHORIZED') {
-      const err = unauthorized()
-      return NextResponse.json(errorResponse(err), { status: err.status })
+    if (error instanceof Error) {
+      if (error.message === 'UNAUTHORIZED') {
+        return NextResponse.json(
+          errorResponse(ErrorCodes.UNAUTHORIZED, 'Authentication required'),
+          { status: 401 }
+        )
+      }
+      if (error.message === 'FORBIDDEN') {
+        return NextResponse.json(
+          errorResponse(ErrorCodes.FORBIDDEN, 'Permission denied'),
+          { status: 403 }
+        )
+      }
     }
 
-    if (error instanceof ApiError) {
-      return NextResponse.json(errorResponse(error), { status: error.status })
-    }
-
-    const err = new ApiError('INTERNAL_ERROR', 'Internal server error', 500)
-    return NextResponse.json(errorResponse(err), { status: 500 })
+    console.error('Get submission error:', error)
+    return NextResponse.json(
+      errorResponse(ErrorCodes.INTERNAL_ERROR, 'Internal server error'),
+      { status: 500 }
+    )
   }
 }
 
@@ -80,35 +98,50 @@ export async function PATCH(
     })
 
     if (!submission) {
-      throw notFound('Submission not found')
-    }
-
-    // Only allow updates in DRAFT or NEED_INFO status
-    if (submission.status !== 'DRAFT' && submission.status !== 'NEED_INFO') {
-      throw forbidden('Submission cannot be updated in its current status')
+      return NextResponse.json(
+        errorResponse(ErrorCodes.NOT_FOUND, 'Submission not found'),
+        { status: 404 }
+      )
     }
 
     const canUpdateAll = await hasPermission(user.id, 'submissions:update:all')
     const canUpdateOwn = await hasPermission(user.id, 'submissions:update:own', {
-      resourceOwnerId: submission.createdById,
+      ownerId: submission.ownerId,
     })
 
     if (!canUpdateAll && !canUpdateOwn) {
-      throw forbidden('You do not have permission to update this submission')
+      const ip = request.headers.get('x-forwarded-for') || 'unknown'
+      const userAgent = request.headers.get('user-agent') || 'unknown'
+      
+      await logDomainEvent({
+        action: 'submission.update',
+        entityType: 'submission',
+        entityId: params.id,
+        userId: user.id,
+        success: false,
+        metadata: { reason: 'permission_denied' },
+        ip,
+        userAgent,
+      })
+
+      throw new Error('FORBIDDEN')
     }
 
     const body = await request.json()
-    const result = updateSubmissionSchema.safeParse(body)
+    const result = updateSchema.safeParse(body)
 
     if (!result.success) {
-      throw invalidInput('Invalid submission data', result.error.errors)
+      return NextResponse.json(
+        errorResponse(ErrorCodes.INVALID_INPUT, 'Invalid submission data', result.error.errors),
+        { status: 400 }
+      )
     }
 
     const updated = await prisma.submission.update({
       where: { id: params.id },
       data: result.data,
       include: {
-        createdBy: {
+        owner: {
           select: {
             id: true,
             email: true,
@@ -124,7 +157,7 @@ export async function PATCH(
     await logDomainEvent({
       action: 'submission.update',
       entityType: 'submission',
-      entityId: updated.id,
+      entityId: params.id,
       userId: user.id,
       success: true,
       metadata: { changes: result.data },
@@ -134,17 +167,109 @@ export async function PATCH(
 
     return NextResponse.json(successResponse(updated))
   } catch (error) {
-    if (error instanceof Error && error.message === 'UNAUTHORIZED') {
-      const err = unauthorized()
-      return NextResponse.json(errorResponse(err), { status: err.status })
-    }
-
-    if (error instanceof ApiError) {
-      return NextResponse.json(errorResponse(error), { status: error.status })
+    if (error instanceof Error) {
+      if (error.message === 'UNAUTHORIZED') {
+        return NextResponse.json(
+          errorResponse(ErrorCodes.UNAUTHORIZED, 'Authentication required'),
+          { status: 401 }
+        )
+      }
+      if (error.message === 'FORBIDDEN') {
+        return NextResponse.json(
+          errorResponse(ErrorCodes.FORBIDDEN, 'Permission denied'),
+          { status: 403 }
+        )
+      }
     }
 
     console.error('Update submission error:', error)
-    const err = new ApiError('INTERNAL_ERROR', 'Internal server error', 500)
-    return NextResponse.json(errorResponse(err), { status: 500 })
+    return NextResponse.json(
+      errorResponse(ErrorCodes.INTERNAL_ERROR, 'Internal server error'),
+      { status: 500 }
+    )
+  }
+}
+
+export async function DELETE(
+  request: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  try {
+    const user = await requireAuth()
+
+    const submission = await prisma.submission.findUnique({
+      where: { id: params.id },
+    })
+
+    if (!submission) {
+      return NextResponse.json(
+        errorResponse(ErrorCodes.NOT_FOUND, 'Submission not found'),
+        { status: 404 }
+      )
+    }
+
+    const canDeleteAll = await hasPermission(user.id, 'submissions:delete:all')
+    const canDeleteOwn = await hasPermission(user.id, 'submissions:delete:own', {
+      ownerId: submission.ownerId,
+    })
+
+    if (!canDeleteAll && !canDeleteOwn) {
+      const ip = request.headers.get('x-forwarded-for') || 'unknown'
+      const userAgent = request.headers.get('user-agent') || 'unknown'
+      
+      await logDomainEvent({
+        action: 'submission.delete',
+        entityType: 'submission',
+        entityId: params.id,
+        userId: user.id,
+        success: false,
+        metadata: { reason: 'permission_denied' },
+        ip,
+        userAgent,
+      })
+
+      throw new Error('FORBIDDEN')
+    }
+
+    await prisma.submission.delete({
+      where: { id: params.id },
+    })
+
+    const ip = request.headers.get('x-forwarded-for') || 'unknown'
+    const userAgent = request.headers.get('user-agent') || 'unknown'
+
+    await logDomainEvent({
+      action: 'submission.delete',
+      entityType: 'submission',
+      entityId: params.id,
+      userId: user.id,
+      success: true,
+      metadata: {},
+      ip,
+      userAgent,
+    })
+
+    return NextResponse.json(successResponse({ deleted: true }))
+  } catch (error) {
+    if (error instanceof Error) {
+      if (error.message === 'UNAUTHORIZED') {
+        return NextResponse.json(
+          errorResponse(ErrorCodes.UNAUTHORIZED, 'Authentication required'),
+          { status: 401 }
+        )
+      }
+      if (error.message === 'FORBIDDEN') {
+        return NextResponse.json(
+          errorResponse(ErrorCodes.FORBIDDEN, 'Permission denied'),
+          { status: 403 }
+        )
+      }
+    }
+
+    console.error('Delete submission error:', error)
+    return NextResponse.json(
+      errorResponse(ErrorCodes.INTERNAL_ERROR, 'Internal server error'),
+      { status: 500 }
+    )
   }
 }
