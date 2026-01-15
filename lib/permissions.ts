@@ -1,6 +1,6 @@
 import prisma from './prisma'
 
-export async function getUserPermissions(userId: string): Promise<string[]> {
+export async function getUserPermissions(userId: string): Promise<Set<string>> {
   const userRoles = await prisma.userRole.findMany({
     where: { userId },
     include: {
@@ -17,41 +17,37 @@ export async function getUserPermissions(userId: string): Promise<string[]> {
   })
 
   const permissions = new Set<string>()
+  
   for (const userRole of userRoles) {
-    for (const rolePerm of userRole.role.rolePermissions) {
-      permissions.add(rolePerm.permission.key)
+    for (const rolePermission of userRole.role.rolePermissions) {
+      permissions.add(rolePermission.permission.key)
     }
   }
 
-  return Array.from(permissions)
+  return permissions
 }
 
 export async function hasPermission(
   userId: string,
   permissionKey: string,
-  context?: { resourceOwnerId?: string }
+  context?: { ownerId?: string }
 ): Promise<boolean> {
   const permissions = await getUserPermissions(userId)
 
-  // Check exact match
-  if (permissions.includes(permissionKey)) {
+  if (permissions.has(permissionKey)) {
     return true
   }
 
-  // Check :own vs :all variants
-  if (permissionKey.includes(':own') && context?.resourceOwnerId) {
-    // User must be the owner
-    if (userId !== context.resourceOwnerId) {
+  if (permissionKey.endsWith(':own') && context?.ownerId) {
+    if (userId !== context.ownerId) {
       return false
     }
-    // Check if user has :own permission
-    return permissions.includes(permissionKey)
+    return permissions.has(permissionKey)
   }
 
-  // Check if user has :all permission when :own is requested
-  if (permissionKey.includes(':own')) {
+  if (permissionKey.endsWith(':own')) {
     const allPermission = permissionKey.replace(':own', ':all')
-    if (permissions.includes(allPermission)) {
+    if (permissions.has(allPermission)) {
       return true
     }
   }
@@ -62,9 +58,10 @@ export async function hasPermission(
 export async function requirePermission(
   userId: string,
   permissionKey: string,
-  context?: { resourceOwnerId?: string }
+  context?: { ownerId?: string }
 ): Promise<void> {
   const allowed = await hasPermission(userId, permissionKey, context)
+  
   if (!allowed) {
     throw new Error('FORBIDDEN')
   }
