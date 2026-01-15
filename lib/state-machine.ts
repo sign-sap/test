@@ -1,11 +1,18 @@
-import { SubmissionStatus, User, Submission } from '@prisma/client'
+import { SubmissionStatus } from '@prisma/client'
 import { hasPermission } from './permissions'
+
+interface Submission {
+  id: string
+  status: SubmissionStatus
+  ownerId: string
+}
 
 interface TransitionDefinition {
   from: SubmissionStatus
   to: SubmissionStatus
   action: string
-  guard: (submission: Submission, actor: User) => Promise<boolean>
+  requiredPermission: string
+  ownerOnly?: boolean
 }
 
 const transitions: TransitionDefinition[] = [
@@ -13,86 +20,65 @@ const transitions: TransitionDefinition[] = [
     from: 'DRAFT',
     to: 'SUBMITTED',
     action: 'submit',
-    guard: async (submission, actor) => {
-      return submission.createdById === actor.id
-    },
+    requiredPermission: 'submissions:transition:submit',
+    ownerOnly: true,
   },
   {
     from: 'SUBMITTED',
     to: 'UNDER_REVIEW',
-    action: 'start_review',
-    guard: async (submission, actor) => {
-      return await hasPermission(actor.id, 'submissions:review')
-    },
+    action: 'review',
+    requiredPermission: 'submissions:transition:review',
   },
   {
     from: 'UNDER_REVIEW',
     to: 'NEED_INFO',
-    action: 'request_info',
-    guard: async (submission, actor) => {
-      return await hasPermission(actor.id, 'submissions:review')
-    },
-  },
-  {
-    from: 'NEED_INFO',
-    to: 'UNDER_REVIEW',
-    action: 'resubmit',
-    guard: async (submission, actor) => {
-      const isOwner = submission.createdById === actor.id
-      const hasUpdatePermission = await hasPermission(
-        actor.id,
-        'submissions:update:own',
-        { resourceOwnerId: submission.createdById }
-      )
-      return isOwner && hasUpdatePermission
-    },
+    action: 'need_info',
+    requiredPermission: 'submissions:transition:need_info',
   },
   {
     from: 'UNDER_REVIEW',
     to: 'APPROVED',
     action: 'approve',
-    guard: async (submission, actor) => {
-      return await hasPermission(actor.id, 'submissions:approve')
-    },
+    requiredPermission: 'submissions:transition:approve',
   },
   {
     from: 'UNDER_REVIEW',
     to: 'REJECTED',
     action: 'reject',
-    guard: async (submission, actor) => {
-      return await hasPermission(actor.id, 'submissions:reject')
-    },
+    requiredPermission: 'submissions:transition:reject',
+  },
+  {
+    from: 'NEED_INFO',
+    to: 'UNDER_REVIEW',
+    action: 'resubmit',
+    requiredPermission: 'submissions:transition:resubmit',
+    ownerOnly: true,
   },
   {
     from: 'APPROVED',
     to: 'CONVERTED',
     action: 'convert',
-    guard: async (submission, actor) => {
-      return await hasPermission(actor.id, 'initiatives:create')
-    },
-  },
-  {
-    from: 'CONVERTED',
-    to: 'ARCHIVED',
-    action: 'archive',
-    guard: async (submission, actor) => {
-      return await hasPermission(actor.id, 'submissions:archive')
-    },
+    requiredPermission: 'submissions:transition:convert',
   },
   {
     from: 'REJECTED',
     to: 'ARCHIVED',
     action: 'archive',
-    guard: async (submission, actor) => {
-      return await hasPermission(actor.id, 'submissions:archive')
-    },
+    requiredPermission: 'submissions:transition:archive',
+  },
+  {
+    from: 'CONVERTED',
+    to: 'ARCHIVED',
+    action: 'archive',
+    requiredPermission: 'submissions:transition:archive',
   },
 ]
 
-export async function getValidActions(
-  submission: Submission,
-  actor: User
-): Promise<string[]> {
+export async function getValidActions(params: {
+  submission: Submission
+  userId: string
+}): Promise<string[]> {
+  const { submission, userId } = params
   const validActions: string[] = []
 
   const availableTransitions = transitions.filter(
@@ -100,53 +86,99 @@ export async function getValidActions(
   )
 
   for (const transition of availableTransitions) {
-    try {
-      const allowed = await transition.guard(submission, actor)
-      if (allowed) {
-        validActions.push(transition.action)
-      }
-    } catch (error) {
-      // Guard failed, skip this action
+    if (transition.ownerOnly && submission.ownerId !== userId) {
       continue
+    }
+
+    const hasPermissionCheck = await hasPermission(
+      userId,
+      transition.requiredPermission
+    )
+
+    if (hasPermissionCheck) {
+      validActions.push(transition.action)
     }
   }
 
   return validActions
 }
 
-export async function applyTransition(
-  submission: Submission,
-  actor: User,
+export async function applyTransition(params: {
+  submission: Submission
+  userId: string
   action: string
-): Promise<{ valid: boolean; newStatus?: SubmissionStatus; error?: string }> {
+  comment?: string
+  metadata?: any
+}): Promise<{
+  success: boolean
+  newStatus?: SubmissionStatus
+  error?: {
+    code: string
+    message: string
+    details?: any
+  }
+}> {
+  const { submission, userId, action } = params
+
   const transition = transitions.find(
     (t) => t.from === submission.status && t.action === action
   )
 
   if (!transition) {
+    const validActionsForState = transitions
+      .filter((t) => t.from === submission.status)
+      .map((t) => t.action)
+
     return {
-      valid: false,
-      error: `Invalid transition: ${action} from ${submission.status}`,
+      success: false,
+      error: {
+        code: 'INVALID_TRANSITION',
+        message: `Invalid transition: ${action} from ${submission.status}`,
+        details: {
+          currentStatus: submission.status,
+          actionAttempted: action,
+          allowedActions: validActionsForState,
+        },
+      },
     }
   }
 
-  try {
-    const allowed = await transition.guard(submission, actor)
-    if (!allowed) {
-      return {
-        valid: false,
-        error: 'Permission denied for this transition',
-      }
-    }
-  } catch (error) {
+  if (transition.ownerOnly && submission.ownerId !== userId) {
     return {
-      valid: false,
-      error: 'Guard check failed',
+      success: false,
+      error: {
+        code: 'PERMISSION_DENIED',
+        message: 'Only the submission owner can perform this action',
+        details: {
+          currentStatus: submission.status,
+          actionAttempted: action,
+        },
+      },
+    }
+  }
+
+  const hasPermissionCheck = await hasPermission(
+    userId,
+    transition.requiredPermission
+  )
+
+  if (!hasPermissionCheck) {
+    return {
+      success: false,
+      error: {
+        code: 'PERMISSION_DENIED',
+        message: 'You do not have permission to perform this action',
+        details: {
+          currentStatus: submission.status,
+          actionAttempted: action,
+          requiredPermission: transition.requiredPermission,
+        },
+      },
     }
   }
 
   return {
-    valid: true,
+    success: true,
     newStatus: transition.to,
   }
 }
