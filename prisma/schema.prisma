@@ -7,6 +7,17 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+enum SubmissionStatus {
+  DRAFT
+  SUBMITTED
+  UNDER_REVIEW
+  NEED_INFO
+  APPROVED
+  REJECTED
+  CONVERTED
+  ARCHIVED
+}
+
 model User {
   id               String    @id @default(cuid())
   email            String    @unique
@@ -18,6 +29,9 @@ model User {
   sessions         Session[]
   otpTokens        OtpToken[]
   auditLogs        AuditLog[]
+  userRoles        UserRole[]
+  submissions      Submission[]
+  comments         Comment[]
 }
 
 model Session {
@@ -59,12 +73,93 @@ model RateLimit {
 }
 
 model AuditLog {
+  id         String   @id @default(cuid())
+  userId     String?
+  email      String?
+  action     String
+  success    Boolean
+  userAgent  String?
+  ip         String?
+  entityType String?
+  entityId   String?
+  metadata   Json?
+  prevHash   String?
+  hash       String?
+  createdAt  DateTime @default(now())
+}
+
+model Role {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  description String?
+  createdAt   DateTime @default(now())
+  
+  userRoles       UserRole[]
+  rolePermissions RolePermission[]
+}
+
+model Permission {
+  id          String   @id @default(cuid())
+  key         String   @unique
+  description String?
+  createdAt   DateTime @default(now())
+  
+  rolePermissions RolePermission[]
+}
+
+model UserRole {
   id        String   @id @default(cuid())
-  userId    String?
-  email     String?
-  action    String
-  success   Boolean
-  userAgent String?
-  ip        String?
+  userId    String
+  roleId    String
   createdAt DateTime @default(now())
+  
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  
+  @@unique([userId, roleId])
+  @@index([userId])
+  @@index([roleId])
+}
+
+model RolePermission {
+  id           String   @id @default(cuid())
+  roleId       String
+  permissionId String
+  
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+  
+  @@unique([roleId, permissionId])
+  @@index([roleId])
+  @@index([permissionId])
+}
+
+model Submission {
+  id          String           @id @default(cuid())
+  title       String
+  description String
+  status      SubmissionStatus @default(DRAFT)
+  createdById String
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+  
+  createdBy User      @relation(fields: [createdById], references: [id], onDelete: Restrict)
+  comments  Comment[]
+  
+  @@index([createdById])
+  @@index([status])
+}
+
+model Comment {
+  id           String   @id @default(cuid())
+  submissionId String
+  authorId     String
+  body         String
+  createdAt    DateTime @default(now())
+  
+  submission Submission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  author     User       @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  
+  @@index([submissionId])
+  @@index([authorId])
 }
