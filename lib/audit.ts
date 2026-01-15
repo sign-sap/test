@@ -37,7 +37,7 @@ export async function logDomainEvent(params: {
       entityId: params.entityId,
       userId: params.userId,
       success: params.success,
-      metadata: params.metadata || {},
+      metadata: params.metadata,
       ip: params.ip,
       userAgent: params.userAgent,
     },
