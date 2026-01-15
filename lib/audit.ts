@@ -19,3 +19,27 @@ export async function logAuthEvent(params: {
     },
   })
 }
+
+export async function logDomainEvent(params: {
+  action: string
+  entityType: string
+  entityId: string
+  userId?: string
+  success: boolean
+  metadata?: any
+  ip?: string
+  userAgent?: string
+}): Promise<void> {
+  await prisma.auditLog.create({
+    data: {
+      action: params.action,
+      entityType: params.entityType,
+      entityId: params.entityId,
+      userId: params.userId,
+      success: params.success,
+      metadata: params.metadata || {},
+      ip: params.ip,
+      userAgent: params.userAgent,
+    },
+  })
+}
