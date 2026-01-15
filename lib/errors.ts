@@ -30,8 +30,10 @@ export const ErrorCodes = {
   OTP_MAX_ATTEMPTS: 'OTP_MAX_ATTEMPTS',
   UNAUTHORIZED: 'UNAUTHORIZED',
   FORBIDDEN: 'FORBIDDEN',
+  PERMISSION_DENIED: 'PERMISSION_DENIED',
   NOT_FOUND: 'NOT_FOUND',
   CONFLICT: 'CONFLICT',
+  INVALID_TRANSITION: 'INVALID_TRANSITION',
   EMAIL_NOT_ALLOWED: 'EMAIL_NOT_ALLOWED',
   INTERNAL_ERROR: 'INTERNAL_ERROR',
 }
@@ -41,10 +43,12 @@ export function getErrorStatus(code: string): number {
     case ErrorCodes.UNAUTHORIZED:
       return 401
     case ErrorCodes.FORBIDDEN:
+    case ErrorCodes.PERMISSION_DENIED:
       return 403
     case ErrorCodes.NOT_FOUND:
       return 404
     case ErrorCodes.CONFLICT:
+    case ErrorCodes.INVALID_TRANSITION:
       return 409
     case ErrorCodes.RATE_LIMIT_EXCEEDED:
       return 429
