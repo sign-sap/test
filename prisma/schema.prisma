@@ -1,0 +1,70 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id               String    @id @default(cuid())
+  email            String    @unique
+  name             String?
+  profileCompleted Boolean   @default(false)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  
+  sessions         Session[]
+  otpTokens        OtpToken[]
+  auditLogs        AuditLog[]
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  userId    String
+  token     String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@index([userId])
+  @@index([token])
+}
+
+model OtpToken {
+  id          String   @id @default(cuid())
+  email       String
+  tokenHash   String
+  expiresAt   DateTime
+  maxAttempts Int      @default(5)
+  attempts    Int      @default(0)
+  createdAt   DateTime @default(now())
+  
+  @@index([email])
+  @@index([expiresAt])
+}
+
+model RateLimit {
+  id         String   @id @default(cuid())
+  identifier String
+  type       String
+  endpoint   String
+  count      Int      @default(1)
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  
+  @@unique([identifier, type, endpoint])
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String?
+  email     String?
+  action    String
+  success   Boolean
+  userAgent String?
+  ip        String?
+  createdAt DateTime @default(now())
+}
