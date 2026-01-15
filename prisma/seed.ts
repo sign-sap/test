@@ -5,24 +5,24 @@ const prisma = new PrismaClient()
 async function main() {
   console.log('Seeding database...')
 
-  // Permissions
   const permissions = [
+    { key: 'submissions:create', description: 'Create submissions' },
     { key: 'submissions:read:own', description: 'Read own submissions' },
     { key: 'submissions:read:all', description: 'Read all submissions' },
-    { key: 'submissions:create', description: 'Create submissions' },
     { key: 'submissions:update:own', description: 'Update own submissions' },
     { key: 'submissions:update:all', description: 'Update all submissions' },
+    { key: 'submissions:delete:own', description: 'Delete own submissions' },
+    { key: 'submissions:delete:all', description: 'Delete all submissions' },
     { key: 'submissions:review', description: 'Review submissions' },
     { key: 'submissions:approve', description: 'Approve submissions' },
     { key: 'submissions:reject', description: 'Reject submissions' },
-    { key: 'submissions:archive', description: 'Archive submissions' },
     { key: 'users:manage', description: 'Manage users' },
     { key: 'roles:manage', description: 'Manage roles' },
     { key: 'audit:read', description: 'Read audit logs' },
-    { key: 'initiatives:create', description: 'Create initiatives' },
   ]
 
   const createdPermissions: Record<string, any> = {}
+  
   for (const perm of permissions) {
     const created = await prisma.permission.upsert({
       where: { key: perm.key },
@@ -32,67 +32,82 @@ async function main() {
     createdPermissions[perm.key] = created
   }
 
-  // Roles
   const ownerRole = await prisma.role.upsert({
-    where: { name: 'Owner' },
+    where: { name: 'owner' },
     update: {},
-    create: { name: 'Owner', description: 'Full system access' },
+    create: {
+      name: 'owner',
+      description: 'Full system access',
+    },
   })
 
   const adminRole = await prisma.role.upsert({
-    where: { name: 'Admin' },
+    where: { name: 'admin' },
     update: {},
-    create: { name: 'Admin', description: 'Administrative access' },
+    create: {
+      name: 'admin',
+      description: 'Administrative access',
+    },
   })
 
   const reviewerRole = await prisma.role.upsert({
-    where: { name: 'Reviewer' },
+    where: { name: 'reviewer' },
     update: {},
-    create: { name: 'Reviewer', description: 'Can review and approve submissions' },
+    create: {
+      name: 'reviewer',
+      description: 'Can review and manage submissions',
+    },
   })
 
   const submitterRole = await prisma.role.upsert({
-    where: { name: 'Submitter' },
+    where: { name: 'submitter' },
     update: {},
-    create: { name: 'Submitter', description: 'Can create and manage own submissions' },
+    create: {
+      name: 'submitter',
+      description: 'Can create and manage own submissions',
+    },
   })
 
   const viewerRole = await prisma.role.upsert({
-    where: { name: 'Viewer' },
+    where: { name: 'viewer' },
     update: {},
-    create: { name: 'Viewer', description: 'Read-only access' },
+    create: {
+      name: 'viewer',
+      description: 'Read-only access',
+    },
   })
 
-  // Role permissions
-  const rolePermissionMap: Record<string, string[]> = {
-    Owner: Object.keys(createdPermissions),
-    Admin: [
+  const rolePermissions: Record<string, string[]> = {
+    owner: Object.keys(createdPermissions),
+    admin: [
+      'submissions:read:all',
+      'submissions:update:all',
+      'submissions:delete:all',
+      'submissions:review',
+      'submissions:approve',
+      'submissions:reject',
       'users:manage',
       'roles:manage',
-      'submissions:read:all',
       'audit:read',
-      'initiatives:create',
-      'submissions:archive',
-      'submissions:review',
-      'submissions:approve',
-      'submissions:reject',
     ],
-    Reviewer: [
+    reviewer: [
       'submissions:read:all',
       'submissions:review',
       'submissions:approve',
       'submissions:reject',
-      'initiatives:create',
     ],
-    Submitter: [
+    submitter: [
       'submissions:create',
       'submissions:read:own',
       'submissions:update:own',
+      'submissions:delete:own',
     ],
-    Viewer: ['submissions:read:all'],
+    viewer: [
+      'submissions:read:all',
+    ],
   }
 
-  for (const [roleName, permKeys] of Object.entries(rolePermissionMap)) {
+  for (const [roleName, permKeys] of Object.entries(rolePermissions)) {
     const role = await prisma.role.findUnique({ where: { name: roleName } })
     if (!role) continue
 
@@ -116,7 +131,6 @@ async function main() {
     }
   }
 
-  // Create owner user
   const ownerEmail = process.env.OWNER_EMAIL || 'owner@innovationportal.com'
   const ownerUser = await prisma.user.upsert({
     where: { email: ownerEmail },
@@ -128,7 +142,6 @@ async function main() {
     },
   })
 
-  // Assign Owner role to owner user
   await prisma.userRole.upsert({
     where: {
       userId_roleId: {
