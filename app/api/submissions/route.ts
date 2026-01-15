@@ -35,19 +35,11 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json(successResponse(submissions))
   } catch (error) {
-    if (error instanceof Error) {
-      if (error.message === 'UNAUTHORIZED') {
-        return NextResponse.json(
-          errorResponse(ErrorCodes.UNAUTHORIZED, 'Authentication required'),
-          { status: 401 }
-        )
-      }
-      if (error.message === 'FORBIDDEN') {
-        return NextResponse.json(
-          errorResponse(ErrorCodes.FORBIDDEN, 'Permission denied'),
-          { status: 403 }
-        )
-      }
+    if (error instanceof Error && error.message === 'UNAUTHORIZED') {
+      return NextResponse.json(
+        errorResponse(ErrorCodes.UNAUTHORIZED, 'Authentication required'),
+        { status: 401 }
+      )
     }
 
     console.error('List submissions error:', error)
@@ -69,7 +61,7 @@ export async function POST(request: NextRequest) {
       
       await logDomainEvent({
         action: 'submission.create',
-        entityType: 'submission',
+        entityType: 'Submission',
         entityId: 'unknown',
         userId: user.id,
         success: false,
@@ -78,7 +70,10 @@ export async function POST(request: NextRequest) {
         userAgent,
       })
 
-      throw new Error('FORBIDDEN')
+      return NextResponse.json(
+        errorResponse(ErrorCodes.PERMISSION_DENIED, 'You do not have permission to create submissions'),
+        { status: 403 }
+      )
     }
 
     const body = await request.json()
@@ -115,30 +110,22 @@ export async function POST(request: NextRequest) {
 
     await logDomainEvent({
       action: 'submission.create',
-      entityType: 'submission',
+      entityType: 'Submission',
       entityId: submission.id,
       userId: user.id,
       success: true,
-      metadata: { title },
+      metadata: { title, status: submission.status },
       ip,
       userAgent,
     })
 
     return NextResponse.json(successResponse(submission), { status: 201 })
   } catch (error) {
-    if (error instanceof Error) {
-      if (error.message === 'UNAUTHORIZED') {
-        return NextResponse.json(
-          errorResponse(ErrorCodes.UNAUTHORIZED, 'Authentication required'),
-          { status: 401 }
-        )
-      }
-      if (error.message === 'FORBIDDEN') {
-        return NextResponse.json(
-          errorResponse(ErrorCodes.FORBIDDEN, 'Permission denied'),
-          { status: 403 }
-        )
-      }
+    if (error instanceof Error && error.message === 'UNAUTHORIZED') {
+      return NextResponse.json(
+        errorResponse(ErrorCodes.UNAUTHORIZED, 'Authentication required'),
+        { status: 401 }
+      )
     }
 
     console.error('Create submission error:', error)
