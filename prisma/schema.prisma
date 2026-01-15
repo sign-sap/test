@@ -7,6 +7,17 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+enum SubmissionStatus {
+  DRAFT
+  SUBMITTED
+  UNDER_REVIEW
+  NEED_INFO
+  APPROVED
+  REJECTED
+  CONVERTED
+  ARCHIVED
+}
+
 model User {
   id               String    @id @default(cuid())
   email            String    @unique
@@ -20,6 +31,7 @@ model User {
   auditLogs     AuditLog[]
   userRoles     UserRole[]
   submissions   Submission[]
+  comments      Comment[]
 }
 
 model Session {
@@ -121,16 +133,31 @@ model RolePermission {
 }
 
 model Submission {
-  id          String   @id @default(cuid())
+  id          String           @id @default(cuid())
   title       String
   description String
-  status      String   @default("draft")
+  status      SubmissionStatus @default(DRAFT)
   ownerId     String
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
   
-  owner User @relation(fields: [ownerId], references: [id], onDelete: Restrict)
+  owner    User      @relation(fields: [ownerId], references: [id], onDelete: Restrict)
+  comments Comment[]
   
   @@index([ownerId])
   @@index([status])
+}
+
+model Comment {
+  id           String   @id @default(cuid())
+  submissionId String
+  authorId     String
+  body         String
+  createdAt    DateTime @default(now())
+  
+  submission Submission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  author     User       @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  
+  @@index([submissionId])
+  @@index([authorId])
 }
