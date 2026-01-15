@@ -4,15 +4,7 @@ import prisma from '@/lib/prisma'
 import { requireAuth } from '@/lib/auth'
 import { getValidActions, applyTransition } from '@/lib/state-machine'
 import { logDomainEvent } from '@/lib/audit'
-import {
-  ApiError,
-  errorResponse,
-  successResponse,
-  unauthorized,
-  notFound,
-  invalidTransition,
-  invalidInput,
-} from '@/lib/errors'
+import { errorResponse, successResponse, ErrorCodes, getErrorStatus } from '@/lib/errors'
 
 const transitionSchema = z.object({
   action: z.string(),
@@ -32,24 +24,36 @@ export async function GET(
     })
 
     if (!submission) {
-      throw notFound('Submission not found')
+      return NextResponse.json(
+        errorResponse(ErrorCodes.NOT_FOUND, 'Submission not found'),
+        { status: 404 }
+      )
     }
 
-    const validActions = await getValidActions(submission, user)
+    const validActions = await getValidActions({
+      submission,
+      userId: user.id,
+    })
 
-    return NextResponse.json(successResponse({ validActions }))
+    return NextResponse.json(
+      successResponse({
+        status: submission.status,
+        validActions,
+      })
+    )
   } catch (error) {
     if (error instanceof Error && error.message === 'UNAUTHORIZED') {
-      const err = unauthorized()
-      return NextResponse.json(errorResponse(err), { status: err.status })
+      return NextResponse.json(
+        errorResponse(ErrorCodes.UNAUTHORIZED, 'Authentication required'),
+        { status: 401 }
+      )
     }
 
-    if (error instanceof ApiError) {
-      return NextResponse.json(errorResponse(error), { status: error.status })
-    }
-
-    const err = new ApiError('INTERNAL_ERROR', 'Internal server error', 500)
-    return NextResponse.json(errorResponse(err), { status: 500 })
+    console.error('Get valid actions error:', error)
+    return NextResponse.json(
+      errorResponse(ErrorCodes.INTERNAL_ERROR, 'Internal server error'),
+      { status: 500 }
+    )
   }
 }
 
@@ -65,29 +69,72 @@ export async function POST(
     })
 
     if (!submission) {
-      throw notFound('Submission not found')
+      return NextResponse.json(
+        errorResponse(ErrorCodes.NOT_FOUND, 'Submission not found'),
+        { status: 404 }
+      )
     }
 
     const body = await request.json()
     const result = transitionSchema.safeParse(body)
 
     if (!result.success) {
-      throw invalidInput('Invalid transition data', result.error.errors)
+      return NextResponse.json(
+        errorResponse(ErrorCodes.INVALID_INPUT, 'Invalid transition data', result.error.errors),
+        { status: 400 }
+      )
     }
 
     const { action, comment, metadata } = result.data
 
-    const transitionResult = await applyTransition(submission, user, action)
+    const transitionResult = await applyTransition({
+      submission,
+      userId: user.id,
+      action,
+      comment,
+      metadata,
+    })
 
-    if (!transitionResult.valid) {
-      throw invalidTransition(transitionResult.error || 'Invalid transition')
+    const ip = request.headers.get('x-forwarded-for') || 'unknown'
+    const userAgent = request.headers.get('user-agent') || 'unknown'
+
+    if (!transitionResult.success) {
+      await logDomainEvent({
+        action: 'submission.transition',
+        entityType: 'Submission',
+        entityId: submission.id,
+        userId: user.id,
+        success: false,
+        metadata: {
+          actionAttempted: action,
+          fromStatus: submission.status,
+          commentPresent: !!comment,
+          error: transitionResult.error,
+        },
+        ip,
+        userAgent,
+      })
+
+      const errorCode = transitionResult.error?.code || ErrorCodes.INTERNAL_ERROR
+      const status = getErrorStatus(errorCode)
+
+      return NextResponse.json(
+        errorResponse(
+          errorCode,
+          transitionResult.error?.message || 'Transition failed',
+          transitionResult.error?.details
+        ),
+        { status }
+      )
     }
 
-    const updated = await prisma.submission.update({
+    const updatedSubmission = await prisma.submission.update({
       where: { id: params.id },
-      data: { status: transitionResult.newStatus! },
+      data: {
+        status: transitionResult.newStatus!,
+      },
       include: {
-        createdBy: {
+        owner: {
           select: {
             id: true,
             email: true,
@@ -107,39 +154,46 @@ export async function POST(
       })
     }
 
-    const ip = request.headers.get('x-forwarded-for') || 'unknown'
-    const userAgent = request.headers.get('user-agent') || 'unknown'
-
     await logDomainEvent({
       action: 'submission.transition',
-      entityType: 'submission',
-      entityId: updated.id,
+      entityType: 'Submission',
+      entityId: submission.id,
       userId: user.id,
       success: true,
       metadata: {
-        action,
+        actionAttempted: action,
         fromStatus: submission.status,
-        toStatus: updated.status,
-        comment,
+        toStatus: transitionResult.newStatus,
+        commentPresent: !!comment,
         ...metadata,
       },
       ip,
       userAgent,
     })
 
-    return NextResponse.json(successResponse(updated))
+    const validActions = await getValidActions({
+      submission: updatedSubmission,
+      userId: user.id,
+    })
+
+    return NextResponse.json(
+      successResponse({
+        submission: updatedSubmission,
+        validActions,
+      })
+    )
   } catch (error) {
     if (error instanceof Error && error.message === 'UNAUTHORIZED') {
-      const err = unauthorized()
-      return NextResponse.json(errorResponse(err), { status: err.status })
-    }
-
-    if (error instanceof ApiError) {
-      return NextResponse.json(errorResponse(error), { status: error.status })
+      return NextResponse.json(
+        errorResponse(ErrorCodes.UNAUTHORIZED, 'Authentication required'),
+        { status: 401 }
+      )
     }
 
     console.error('Transition error:', error)
-    const err = new ApiError('INTERNAL_ERROR', 'Internal server error', 500)
-    return NextResponse.json(errorResponse(err), { status: 500 })
+    return NextResponse.json(
+      errorResponse(ErrorCodes.INTERNAL_ERROR, 'Internal server error'),
+      { status: 500 }
+    )
   }
 }
