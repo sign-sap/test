@@ -4,16 +4,9 @@ import prisma from '@/lib/prisma'
 import { requireAuth } from '@/lib/auth'
 import { hasPermission } from '@/lib/permissions'
 import { logDomainEvent } from '@/lib/audit'
-import {
-  ApiError,
-  errorResponse,
-  successResponse,
-  unauthorized,
-  forbidden,
-  invalidInput,
-} from '@/lib/errors'
+import { errorResponse, successResponse, ErrorCodes, getErrorStatus } from '@/lib/errors'
 
-const createSubmissionSchema = z.object({
+const createSchema = z.object({
   title: z.string().min(5).max(200),
   description: z.string().min(10),
 })
@@ -21,13 +14,13 @@ const createSubmissionSchema = z.object({
 export async function GET(request: NextRequest) {
   try {
     const user = await requireAuth()
-
+    
     const canReadAll = await hasPermission(user.id, 'submissions:read:all')
-
+    
     const submissions = await prisma.submission.findMany({
-      where: canReadAll ? {} : { createdById: user.id },
+      where: canReadAll ? {} : { ownerId: user.id },
       include: {
-        createdBy: {
+        owner: {
           select: {
             id: true,
             email: true,
@@ -42,13 +35,26 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json(successResponse(submissions))
   } catch (error) {
-    if (error instanceof Error && error.message === 'UNAUTHORIZED') {
-      const err = unauthorized()
-      return NextResponse.json(errorResponse(err), { status: err.status })
+    if (error instanceof Error) {
+      if (error.message === 'UNAUTHORIZED') {
+        return NextResponse.json(
+          errorResponse(ErrorCodes.UNAUTHORIZED, 'Authentication required'),
+          { status: 401 }
+        )
+      }
+      if (error.message === 'FORBIDDEN') {
+        return NextResponse.json(
+          errorResponse(ErrorCodes.FORBIDDEN, 'Permission denied'),
+          { status: 403 }
+        )
+      }
     }
 
-    const err = new ApiError('INTERNAL_ERROR', 'Internal server error', 500)
-    return NextResponse.json(errorResponse(err), { status: 500 })
+    console.error('List submissions error:', error)
+    return NextResponse.json(
+      errorResponse(ErrorCodes.INTERNAL_ERROR, 'Internal server error'),
+      { status: 500 }
+    )
   }
 }
 
@@ -58,14 +64,31 @@ export async function POST(request: NextRequest) {
 
     const canCreate = await hasPermission(user.id, 'submissions:create')
     if (!canCreate) {
-      throw forbidden('You do not have permission to create submissions')
+      const ip = request.headers.get('x-forwarded-for') || 'unknown'
+      const userAgent = request.headers.get('user-agent') || 'unknown'
+      
+      await logDomainEvent({
+        action: 'submission.create',
+        entityType: 'submission',
+        entityId: 'unknown',
+        userId: user.id,
+        success: false,
+        metadata: { reason: 'permission_denied' },
+        ip,
+        userAgent,
+      })
+
+      throw new Error('FORBIDDEN')
     }
 
     const body = await request.json()
-    const result = createSubmissionSchema.safeParse(body)
+    const result = createSchema.safeParse(body)
 
     if (!result.success) {
-      throw invalidInput('Invalid submission data', result.error.errors)
+      return NextResponse.json(
+        errorResponse(ErrorCodes.INVALID_INPUT, 'Invalid submission data', result.error.errors),
+        { status: 400 }
+      )
     }
 
     const { title, description } = result.data
@@ -74,11 +97,10 @@ export async function POST(request: NextRequest) {
       data: {
         title,
         description,
-        status: 'DRAFT',
-        createdById: user.id,
+        ownerId: user.id,
       },
       include: {
-        createdBy: {
+        owner: {
           select: {
             id: true,
             email: true,
@@ -97,24 +119,32 @@ export async function POST(request: NextRequest) {
       entityId: submission.id,
       userId: user.id,
       success: true,
-      metadata: { title, status: submission.status },
+      metadata: { title },
       ip,
       userAgent,
     })
 
     return NextResponse.json(successResponse(submission), { status: 201 })
   } catch (error) {
-    if (error instanceof Error && error.message === 'UNAUTHORIZED') {
-      const err = unauthorized()
-      return NextResponse.json(errorResponse(err), { status: err.status })
-    }
-
-    if (error instanceof ApiError) {
-      return NextResponse.json(errorResponse(error), { status: error.status })
+    if (error instanceof Error) {
+      if (error.message === 'UNAUTHORIZED') {
+        return NextResponse.json(
+          errorResponse(ErrorCodes.UNAUTHORIZED, 'Authentication required'),
+          { status: 401 }
+        )
+      }
+      if (error.message === 'FORBIDDEN') {
+        return NextResponse.json(
+          errorResponse(ErrorCodes.FORBIDDEN, 'Permission denied'),
+          { status: 403 }
+        )
+      }
     }
 
     console.error('Create submission error:', error)
-    const err = new ApiError('INTERNAL_ERROR', 'Internal server error', 500)
-    return NextResponse.json(errorResponse(err), { status: 500 })
+    return NextResponse.json(
+      errorResponse(ErrorCodes.INTERNAL_ERROR, 'Internal server error'),
+      { status: 500 }
+    )
   }
 }
